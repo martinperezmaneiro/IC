@@ -169,7 +169,7 @@ def diffsim( *
                                           out = 'passed_active')
     events_passed_active_hits = fl.count_filter(bool, args='passed_active')
 
-    simulate_electrons = fl.map(ielectron_simulator(**physics_params_),
+    simulate_electrons = fl.map(ielectron_simulator_diffsim(**physics_params_),
                                 args = ('x_a', 'y_a', 'z_a', 'time_a', 'energy_a'),
                                 out  = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'times_ph', 'nphotons'))
     
