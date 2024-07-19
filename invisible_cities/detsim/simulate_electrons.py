@@ -99,3 +99,57 @@ def diffuse_electrons(xs                     : np.ndarray,
     dzs  = np.random.normal(zs, sqrtz * longitudinal_diffusion)
 
     return (dxs, dys, dzs)
+
+# def distribute_hits_energy_among_electrons(nes      : np.ndarray,
+#                                            energies : np.ndarray) -> np.ndarray:
+#     """
+#     Distributes energy from each hit to its ionization electrons equally. 
+#     Energy from hits with zero ionization electrons is redistributed among 
+#     other hits, proportionally to their energy.
+
+#     Parameters:
+#         :nes: np.ndarray
+#             The ionization electrons per hit.
+#         :energies: np.ndarray
+#             Energy of each hit.
+
+#     Returns:
+#         :electron_energies: np.ndarray
+#             The energies of the ionization electrons.
+#     """
+#     electron_energies = []
+#     total_energy_to_redistribute = np.sum(energies[nes == 0])
+    
+#     non_zero_indices = np.where(nes > 0)[0]
+#     total_energy_in_non_zero_hits = np.sum(energies[non_zero_indices])
+#     redistributed_energies = (energies[non_zero_indices] / total_energy_in_non_zero_hits) * total_energy_to_redistribute
+    
+#     for i, idx in enumerate(non_zero_indices):
+#         n_electrons = nes[idx]
+#         energies_per_electron = np.full(n_electrons, energies[idx] / n_electrons)
+#         # This line is the one that does the redistribution, plus some of the lines before
+#         energies_per_electron += redistributed_energies[i] / n_electrons
+#         electron_energies.append(energies_per_electron)
+
+#     return np.concatenate(electron_energies)
+
+
+def distribute_hits_energy_among_electrons(nes: np.ndarray, energies: np.ndarray) -> np.ndarray:
+    """
+    Distributes energy from each hit to its ionization electrons equally. 
+
+    Parameters:
+        :nes: np.ndarray
+            The ionization electrons per hit.
+        :energies: np.ndarray
+            Energy of each hit.
+
+    Returns:
+        :electron_energies: np.ndarray
+            The energies of the ionization electrons.
+    """
+    non_zero_nes = nes[nes > 0]
+    non_zero_energies = energies[nes > 0]
+    electron_energies = np.repeat(non_zero_energies / non_zero_nes, non_zero_nes)
+    
+    return electron_energies
