@@ -109,16 +109,53 @@ def ielectron_simulator_diffsim(*, wi: float, fano_factor: float, lifetime: floa
         return dx, dy, dz, nelec_ener, dtimes, nphotons
     return simulate_ielectrons
 
+@check_annotations
+def event_fiducial_selector(*, xlim: tuple, ylim: tuple, zlim: tuple):
+    """
+    Selects events based in the voxelization limits.
+    """
+    def select_fiducial_events(x, y, z):
+        hits_out = np.any(x < xlim[0]) | np.any(x > xlim[1]) | \
+                   np.any(y < ylim[0]) | np.any(y > ylim[1]) | \
+                   np.any(z < zlim[0]) | np.any(z > zlim[1])
+        return ~hits_out
+    return select_fiducial_events
+
+@check_annotations
+def voxel_creator(*, xlim : tuple, nbins_x : int,
+                     ylim : tuple, nbins_y : int,
+                     zlim : tuple, nbins_z : int):
+    """
+    Aggregates all the diffussion electrons with (x, y, z, E, nphotons) in 
+    voxels of certain size (total size / (nbins - 1)), adding the energy 
+    and the number of photons.
+    """
+    def create_voxels(x, y, z, energy, nphotons):
+        bins_x = np.linspace(xlim[0], xlim[1], nbins_x)
+        bins_y = np.linspace(ylim[0], ylim[1], nbins_y)
+        bins_z = np.linspace(zlim[0], zlim[1], nbins_z)
+
+        xbin = pd.cut(x, bins_x, labels = np.arange(0, len(bins_x)-1)).astype('int')
+        ybin = pd.cut(y, bins_y, labels = np.arange(0, len(bins_y)-1)).astype('int')
+        zbin = pd.cut(z, bins_z, labels = np.arange(0, len(bins_z)-1)).astype('int')
+
+        df = pd.DataFrame({'xbin' : xbin, 'ybin' : ybin, 'zbin' : zbin,'energy' : energy, 'nphotons' : nphotons})
+        out = df.groupby(['xbin', 'ybin', 'zbin']).agg({'energy': 'sum', 'nphotons':'sum'}).reset_index()
+        xbin, ybin, zbin, ebin, phbin = out.xbin.values, out.ybin.values, out.zbin.values, out.energy.values, out.nphotons.values
+
+        return xbin, ybin, zbin, ebin, phbin
+    
+    return create_voxels
+
 # Probably these 2 functions won't go here, or there's another function from IC that can do this easily, but I ignore it
 def diff_df_creator():
-    def create_diff_df(evt, x, y, z, energy, time, nphotons):
-        return pd.DataFrame({'event'    : evt      , 
-                             'dx'       : x        , 
-                             'dy'       : y        , 
-                             'dz'       : z        , 
-                             'energy'   : energy   , 
-                             'time'     : time     , 
-                             'nphotons' : nphotons})
+    def create_diff_df(evt, x, y, z, energy, nphotons):
+        return pd.DataFrame({'event'  : evt, 
+                             'xbin'   : x, 
+                             'ybin'   : y, 
+                             'zbin'   : z, 
+                             'ebin'   : energy, 
+                             'nphbin' : nphotons})
     return create_diff_df
 
 def diff_writer(h5out):
@@ -145,6 +182,7 @@ def diffsim( *
             , run_number     : int
             , buffer_params  : dict
             , physics_params : dict
+            , voxel_params   : dict
             , rate           : float
             ):
 
@@ -173,9 +211,19 @@ def diffsim( *
                                 args = ('x_a', 'y_a', 'z_a', 'time_a', 'energy_a'),
                                 out  = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'times_ph', 'nphotons'))
     
+    filter_events_out_fiducial = fl.map(event_fiducial_selector(**{key: voxel_params[key] for key in ['xlim', 'ylim', 'zlim']}), 
+                                        args = ('x_ph', 'y_ph', 'z_ph'), 
+                                        out = 'passed_fiducial')
+    
+    fiducial_events = fl.count_filter(bool, args='passed_fiducial')
+
+    voxelize_events = fl.map(voxel_creator(**voxel_params), 
+                             args = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'nphotons'), 
+                             out = ('x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin'))
+    
     creates_diff_df = fl.map(diff_df_creator(), 
-                             args = ('event_number', 'x_ph', 'y_ph', 'z_ph', 'energy_ph', 'times_ph', 'nphotons'), 
-                             out = ('diff_df'))
+                             args = ('event_number', 'x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin'), 
+                             out = ('vox_diff_df'))
 
     count_photons = fl.map(lambda x: np.sum(x) > 0,
                            args= 'nphotons',
@@ -187,9 +235,10 @@ def diffsim( *
     evtnum_collect = collect()
 
     with tb.open_file(file_out, "w", filters = tbl.filters(compression)) as h5out:
-        write_nohits_filter   = fl.sink(event_filter_writer(h5out, "active_hits"), args=("event_number", "passed_active") )
-        write_dark_evt_filter = fl.sink(event_filter_writer(h5out, "dark_events"), args=("event_number", "enough_photons"))
-        write_diff            = fl.sink(diff_writer        (h5out = h5out       ), args=("diff_df")                       )
+        write_nohits_filter   = fl.sink(event_filter_writer(h5out, "active_hits"), args=("event_number", "passed_active")  )
+        write_dark_evt_filter = fl.sink(event_filter_writer(h5out, "dark_events"), args=("event_number", "enough_photons") )
+        write_fiducial_filter = fl.sink(event_filter_writer(h5out,  "fid_events"), args=("event_number", "passed_fiducial"))
+        write_diff            = fl.sink(diff_writer        (h5out = h5out       ), args=("vox_diff_df")                    )
 
         result = fl.push(source= MC_hits_from_files(files_in, rate),
                          pipe  = fl.pipe( fl.slice(*event_range, close_all=True)
@@ -202,6 +251,10 @@ def diffsim( *
                                         , fl.branch(write_nohits_filter)
                                         , events_passed_active_hits.filter
                                         , simulate_electrons
+                                        , filter_events_out_fiducial
+                                        , fl.branch(write_fiducial_filter)
+                                        , fiducial_events.filter
+                                        , voxelize_events
                                         , count_photons
                                         , fl.branch(write_dark_evt_filter)
                                         , dark_events.filter
