@@ -163,12 +163,12 @@ def diff_writer(h5out):
     For a given open table returns a writer for diffusion electrons dataframe
     """
     def write_diff(df):
-        return df_writer(h5out              = h5out                      ,
-                         df                 = df                         ,
-                         group_name         = 'Diffsim'                   ,
-                         table_name         = 'Diff_electrons'           ,
-                         descriptive_string = 'Diffused electrons'       ,
-                         columns_to_index   = ['event']                  )
+        return df_writer(h5out              = h5out                         ,
+                         df                 = df                            ,
+                         group_name         = 'Diffsim'                     ,
+                         table_name         = 'vox_diff'                    ,
+                         descriptive_string = 'Voxelized diffused electrons',
+                         columns_to_index   = ['event']                     )
     return write_diff
 
 @city
