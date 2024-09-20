@@ -141,6 +141,18 @@ def segclass_creator(sig_creator : str, segclass_dct : dict, delta_ener_loss : f
         return label_hits.segclass.values
     return add_segclass
 
+def decolabel_creator():
+    '''
+    Compares voxelized MC and diffused tracks to assign to the diffused voxels a label for deconvolution with NNs
+    '''
+    def add_decolabel(xdiff, ydiff, zdiff, xmc, ymc, zmc):
+        diff = pd.DataFrame({'x':xdiff, 'y':ydiff, 'z':zdiff})
+        norm = pd.DataFrame({'x':xmc, 'y':ymc, 'z':zmc})
+
+        decolabel = (diff.merge(norm, how = 'left', indicator=True)._merge == 'both').astype('int').values
+        return decolabel
+    return add_decolabel
+
 @check_annotations
 def ielectron_simulator_diffsim(*, wi: float, fano_factor: float, lifetime: float,
                                 transverse_diffusion: float, longitudinal_diffusion: float, drift_velocity:float,
@@ -214,15 +226,16 @@ def voxel_creator(*, xlim : tuple, nbins_x : int,
 
 # Probably these 2 functions won't go here, or there's another function from IC that can do this easily, but I ignore it
 def diff_df_creator():
-    def create_diff_df(evt, x, y, z, energy, nphotons, binclass, segclass):
-        return pd.DataFrame({'event'    : evt, 
-                             'xbin'     : x, 
-                             'ybin'     : y, 
-                             'zbin'     : z, 
-                             'ebin'     : energy, 
-                             'nphbin'   : nphotons, 
-                             'binclass' : binclass,
-                             'segclass' : segclass})
+    def create_diff_df(evt, x, y, z, energy, nphotons, binclass, segclass, decolabel):
+        return pd.DataFrame({'event'     : evt, 
+                             'xbin'      : x, 
+                             'ybin'      : y, 
+                             'zbin'      : z, 
+                             'ebin'      : energy, 
+                             'nphbin'    : nphotons, 
+                             'binclass'  : binclass,
+                             'segclass'  : segclass, 
+                             'decolabel' : decolabel})
     return create_diff_df
 
 def diff_writer(h5out):
@@ -286,6 +299,10 @@ def diffsim( *
     assign_segclass = fl.map(segclass_creator(**label_params), 
                              args = ('hits_part_df', 'binclass'), 
                              out  = 'segclass_a')
+    
+    voxelize_mc = fl.map(voxel_creator(**voxel_params), 
+                             args = ('x_a', 'y_a', 'z_a', 'energy_a', 'time_a', 'segclass_a'), 
+                             out = ('xbin_mc', 'ybin_mc', 'zbin_mc', 'ebin_mc', '_', 'segbin_mc'))
 
     simulate_electrons = fl.map(ielectron_simulator_diffsim(**physics_params_),
                                 args = ('x_a', 'y_a', 'z_a', 'time_a', 'energy_a', 'segclass_a'),
@@ -301,8 +318,12 @@ def diffsim( *
                              args = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'nphotons', 'segclass_ph'), 
                              out = ('x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin', 'seg_bin'))
     
+    create_decolabel = fl.map(decolabel_creator(), 
+                              args = ('x_bin', 'y_bin', 'z_bin', 'xbin_mc', 'ybin_mc', 'zbin_mc'), 
+                              out = ('deco_bin'))
+    
     creates_diff_df = fl.map(diff_df_creator(), 
-                             args = ('event_number', 'x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin', 'binclass', 'seg_bin'), 
+                             args = ('event_number', 'x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin', 'binclass', 'seg_bin', 'deco_bin'), 
                              out = ('vox_diff_df'))
 
     count_photons = fl.map(lambda x: np.sum(x) > 0,
@@ -333,11 +354,13 @@ def diffsim( *
                                         , assign_binclass
                                         , creates_hits_part_df
                                         , assign_segclass
+                                        , voxelize_mc
                                         , simulate_electrons
                                         , filter_events_out_fiducial
                                         , fl.branch(write_fiducial_filter)
                                         , fiducial_events.filter
                                         , voxelize_events
+                                        , create_decolabel
                                         , count_photons
                                         , fl.branch(write_dark_evt_filter)
                                         , dark_events.filter
