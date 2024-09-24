@@ -97,7 +97,17 @@ def binclass_creator(sig_creator : str):
     This is explained by how the nexus simulation stores information.
     The rest events are labelled as background.
     """
-    add_binclass = lambda creator_proc: 1 if int(sum(creator_proc == sig_creator)) == 2 else 0
+    def add_binclass(particle_id, particle_name, creator_proc, hit_part_id):
+        # Pick the particles that created any MC hit
+        part_df = pd.DataFrame({'particle_id' : particle_id, 'particle_name' : particle_name, 'creator_proc' : creator_proc})
+        hit_part_df = pd.DataFrame({'particle_id' : hit_part_id}).drop_duplicates()
+        part_df = hit_part_df.merge(part_df, how = 'left')
+        # From all those, pick the e+/e-
+        part_df = part_df[np.isin(part_df.particle_name, ['e+', 'e-'])]
+        # Consider signal when there are 2 particles with the same signal creator process
+        # Consider background otherwise
+        return 1 if int(sum(part_df.creator_proc == sig_creator)) == 2 else 0
+
     return add_binclass
 
 def hits_particle_df_creator():
