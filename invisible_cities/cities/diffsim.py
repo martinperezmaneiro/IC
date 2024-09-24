@@ -299,7 +299,7 @@ def diffsim( *
     events_passed_active_hits = fl.count_filter(bool, args='passed_active')
 
     assign_binclass = fl.map(binclass_creator(label_params['sig_creator']), 
-                             args = 'creator_proc', 
+                             args = ('particle_id', 'particle_name', 'creator_proc', 'hit_part_id'), 
                              out  = 'binclass')
 
     creates_hits_part_df = fl.map(hits_particle_df_creator(), 
