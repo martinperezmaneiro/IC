@@ -51,3 +51,18 @@ def small_blob_fix(label_hits, main_track, segclass_dct):
     label_hits.loc[(label_hits.segclass == segclass_dct['track']) & missing_hits_mask.values, 'segclass'] = segclass_dct['blob']
     return label_hits
 
+def get_extremes_label(hits_part, main_track, binclass):
+    main_track_hits = hits_part.merge(main_track, how = 'inner')
+    #signal
+    if binclass:
+        extreme_hits = main_track_hits.groupby('particle_id').apply(lambda x: x.loc[x['hit_id'].idxmax()]).reset_index(drop = True).sort_values(['track_ener'], ascending= False)
+        extreme_hits['ext'] = [1, 2]
+    #background
+    else:
+        start_hit = main_track_hits.groupby(['particle_id']).apply(lambda x: x.loc[x['hit_id'].idxmin()]).reset_index(drop=True)
+        end_hit   = main_track_hits.groupby(['particle_id']).apply(lambda x: x.loc[x['hit_id'].idxmax()]).reset_index(drop=True)
+        start_hit['ext'] = 2
+        end_hit['ext']   = 1
+        extreme_hits = pd.concat([start_hit, end_hit])
+
+    return hits_part.merge(extreme_hits[['particle_id', 'hit_id', 'ext']], how = 'outer').fillna(0).ext.values.astype(int)

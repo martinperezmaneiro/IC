@@ -44,6 +44,7 @@ from ..detsim.label_functions import select_main_track
 from ..detsim.label_functions import label_track_and_other
 from ..detsim.label_functions import label_blob_hits
 from ..detsim.label_functions import small_blob_fix
+from ..detsim.label_functions import get_extremes_label
 
 @check_annotations
 def filter_hits_after_max_time(max_time : float):
@@ -138,6 +139,8 @@ def segclass_creator(sig_creator : str, segclass_dct : dict, delta_ener_loss : f
 
         # Select particles from main track and assign them their label
         main_track = select_main_track    (part, binclass, sig_creator)
+        # From this we can get the extremes label
+        ext = get_extremes_label(hits_part, main_track, binclass)
         label_part = label_track_and_other(part, main_track, segclass_dct)
 
         # Merge with hits info the segmentation label
@@ -148,8 +151,32 @@ def segclass_creator(sig_creator : str, segclass_dct : dict, delta_ener_loss : f
 
         # Sort back again the hits with the same order as before
         label_hits = label_hits.sort_index()
-        return label_hits.segclass.values
+        
+        return label_hits.segclass.values, ext
     return add_segclass
+
+def extlabel_creator(segclass_dct):
+    '''
+    Adds extreme label to voxels, and forces some of them to be blob class
+    '''
+    def add_extlabel(x, y, z, ext, bins, xbin, ybin, zbin, segbin, binclass):
+        coords = ['x', 'y', 'z']
+        ext_df = pd.DataFrame({'x':x, 'y':y, 'z':z, 'ext':ext})
+        ext_df = ext_df[ext_df.ext != 0]
+        for i in range(3): ext_df[coords[i] + 'bin'] = pd.cut(ext_df[coords[i]], bins[i], labels = np.arange(0, len(bins[i])-1)).astype('int')
+        ext_df = ext_df.drop(coords, axis = 1).rename(columns={'xbin':'x', 'ybin':'y', 'zbin':'z'})
+
+        vox_df = pd.DataFrame({'x':xbin, 'y':ybin, 'z':zbin, 'segclass':segbin})
+        vox_df = vox_df.merge(ext_df, how = 'outer').fillna(0)
+        vox_df['ext'] = vox_df['ext'].astype(int)
+        # Make sure that certain extremes have blob label
+        if binclass == 0:
+            vox_df.loc[(vox_df['ext'] == 1), 'segclass'] = segclass_dct['blob']
+        if binclass == 1:
+            vox_df.loc[vox_df['ext'].isin([1, 2]), 'segclass'] = segclass_dct['blob']
+        return vox_df.segclass.values, vox_df.ext.values
+    
+    return add_extlabel
 
 def decolabel_creator():
     '''
@@ -201,51 +228,80 @@ def event_fiducial_selector(*, xlim: tuple, ylim: tuple, zlim: tuple):
     return select_fiducial_events
 
 @check_annotations
-def voxel_creator(*, xlim : tuple, nbins_x : int,
-                     ylim : tuple, nbins_y : int,
-                     zlim : tuple, nbins_z : int):
-    """
-    Aggregates all the diffussion electrons with (x, y, z, E, nphotons) in 
-    voxels of certain size (total size / (nbins - 1)), adding the energy 
-    and the number of photons.
-    Also, the class that deposited more energy within a voxel is assigned to
-    this voxel.
-    """
-    def create_voxels(x, y, z, energy, nphotons, segclass):
+def bins_creator(*, xlim : tuple, nbins_x : int,
+                  ylim : tuple, nbins_y : int,
+                  zlim : tuple, nbins_z : int):
+    
+    def create_bins():
         bins_x = np.linspace(xlim[0], xlim[1], nbins_x)
         bins_y = np.linspace(ylim[0], ylim[1], nbins_y)
         bins_z = np.linspace(zlim[0], zlim[1], nbins_z)
+        return (bins_x, bins_y, bins_z)
+    return create_bins
 
-        xbin = pd.cut(x, bins_x, labels = np.arange(0, len(bins_x)-1)).astype('int')
-        ybin = pd.cut(y, bins_y, labels = np.arange(0, len(bins_y)-1)).astype('int')
-        zbin = pd.cut(z, bins_z, labels = np.arange(0, len(bins_z)-1)).astype('int')
+@check_annotations
+def voxel_creator():
+    """
+    Aggregates all the diffussion electrons with (x, y, z, E, nphotons) in 
+    voxels of certain size (total size / (nbins - 1)), adding the energy 
+    and the number of photons (not used for pure MC).
+    Also, it returns the x, y and z mean positions (once again, not used for MC
+    voxelization, but used for the diffusion).
+    # The class that deposited more energy within a voxel is assigned to
+    # this voxel, but we add a weight for each class to give more importance
+    # to certain classes using a dict with {class_number:weight}
+    """
+    def create_voxels(x, y, z, bins, energy, nphotons, segclass): 
 
-        df = pd.DataFrame({'xbin' : xbin, 'ybin' : ybin, 'zbin' : zbin,'energy' : energy, 'nphotons' : nphotons, 'segclass':segclass})
-        class_df = df.groupby(['xbin', 'ybin', 'zbin', 'segclass']).agg({'energy': 'sum', 'nphotons': 'sum'}).reset_index()
-        total_df = class_df.groupby(['xbin', 'ybin', 'zbin']).agg({'energy': 'sum', 'nphotons': 'sum'}).reset_index()
+        xbin = pd.cut(x, bins[0], labels = np.arange(0, len(bins[0])-1)).astype('int')
+        ybin = pd.cut(y, bins[1], labels = np.arange(0, len(bins[1])-1)).astype('int')
+        zbin = pd.cut(z, bins[2], labels = np.arange(0, len(bins[2])-1)).astype('int')
+
+        df = pd.DataFrame({'xbin' : xbin, 'ybin' : ybin, 'zbin' : zbin, 'x' : x, 'y' : y, 'z' : z, 'energy' : energy, 'nphotons' : nphotons, 'segclass' : segclass}) 
+
+        # Taking off the weighted energy thing because I'm adding the extremes label
+        # if class_weights is not None:
+        #     df['wgt_ene'] = df.apply(lambda row: row['energy'] * class_weights.get(row['segclass'], 1), axis=1)
+        # else:
+        #     df['wgt_ene'] = df['energy']
+        
+        def weighted_mean(column, weights):
+            return (column * weights).sum() / weights.sum()
+
+        mean_pos = lambda coord: weighted_mean(coord, df.loc[coord.index, 'energy'])
+
+        # Get bins
+        total_df = df.groupby(['xbin', 'ybin', 'zbin']).agg({'x':mean_pos, 'y':mean_pos, 'z':mean_pos, 'energy': 'sum', 'nphotons': 'sum'}).reset_index()
+        class_df = df.groupby(['xbin', 'ybin', 'zbin', 'segclass']).agg({'energy': 'sum', 'energy':'sum', 'nphotons': 'sum'}).reset_index()
 
         max_ener_idx = class_df.groupby(['xbin', 'ybin', 'zbin'])['energy'].idxmax()
         class_winner_df = class_df.loc[max_ener_idx, ['xbin', 'ybin', 'zbin', 'segclass']]
         out = pd.merge(total_df, class_winner_df, on=['xbin', 'ybin', 'zbin'])
 
-        xbin, ybin, zbin, ebin, phbin, segbin = out.xbin.values, out.ybin.values, out.zbin.values, out.energy.values, out.nphotons.values, out.segclass.values
+        xbin, ybin, zbin = out.xbin.values, out.ybin.values, out.zbin.values
+        xmean, ymean, zmean = out.x.values, out.y.values, out.z.values
+        ebin, phbin, segbin = out.energy.values, out.nphotons.values, out.segclass.values
 
-        return xbin, ybin, zbin, ebin, phbin, segbin
+        return xbin, ybin, zbin, xmean, ymean, zmean, ebin, phbin, segbin 
     
     return create_voxels
 
 # Probably these 2 functions won't go here, or there's another function from IC that can do this easily, but I ignore it
 def diff_df_creator():
-    def create_diff_df(evt, x, y, z, energy, nphotons, binclass, segclass, decolabel):
+    def create_diff_df(evt, x, y, z, xmean, ymean, zmean, energy, nphotons, binclass, segclass, decolabel, extlabel):
         return pd.DataFrame({'event'     : evt, 
                              'xbin'      : x, 
                              'ybin'      : y, 
                              'zbin'      : z, 
+                             'x_mean'    : xmean,
+                             'y_mean'    : ymean,
+                             'z_mean'    : zmean,
                              'ebin'      : energy, 
                              'nphbin'    : nphotons, 
                              'binclass'  : binclass,
                              'segclass'  : segclass, 
-                             'decolabel' : decolabel})
+                             'decolabel' : decolabel,
+                             'extlabel'  : extlabel})
     return create_diff_df
 
 def diff_writer(h5out):
@@ -308,11 +364,14 @@ def diffsim( *
     
     assign_segclass = fl.map(segclass_creator(**label_params), 
                              args = ('hits_part_df', 'binclass'), 
-                             out  = 'segclass_a')
+                             out  = ('segclass_a', 'ext_a'))
+    create_bins = fl.map(bins_creator(**voxel_params), 
+                        args = (), 
+                        out = 'bins')
     
-    voxelize_mc = fl.map(voxel_creator(**voxel_params), 
-                             args = ('x_a', 'y_a', 'z_a', 'energy_a', 'time_a', 'segclass_a'), 
-                             out = ('xbin_mc', 'ybin_mc', 'zbin_mc', 'ebin_mc', '_', 'segbin_mc'))
+    voxelize_mc = fl.map(voxel_creator(), 
+                             args = ('x_a', 'y_a', 'z_a', 'bins', 'energy_a', 'time_a', 'segclass_a'), # using time here to fill the function with something
+                             out = ('xbin_mc', 'ybin_mc', 'zbin_mc', '_', '_', '_', 'ebin_mc', '_', 'segbin_mc'))
 
     simulate_electrons = fl.map(ielectron_simulator_diffsim(**physics_params_),
                                 args = ('x_a', 'y_a', 'z_a', 'time_a', 'energy_a', 'segclass_a'),
@@ -324,16 +383,20 @@ def diffsim( *
     
     fiducial_events = fl.count_filter(bool, args='passed_fiducial')
 
-    voxelize_events = fl.map(voxel_creator(**voxel_params), 
-                             args = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'nphotons', 'segclass_ph'), 
-                             out = ('x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin', 'seg_bin'))
+    voxelize_events = fl.map(voxel_creator(), 
+                             args = ('x_ph', 'y_ph', 'z_ph', 'bins', 'energy_ph', 'nphotons', 'segclass_ph'), 
+                             out = ('x_bin', 'y_bin', 'z_bin', 'x_mean', 'y_mean', 'z_mean', 'e_bin', 'nph_bin', 'seg_bin'))
+    
+    create_extlabel = fl.map(extlabel_creator(label_params['segclass_dct']), 
+                             args = ('x_a', 'y_a', 'z_a', 'ext_a', 'bins', 'x_bin', 'y_bin', 'z_bin', 'seg_bin', 'binclass'),
+                             out = ('new_seg_bin', 'ext_bin'))
     
     create_decolabel = fl.map(decolabel_creator(), 
                               args = ('x_bin', 'y_bin', 'z_bin', 'xbin_mc', 'ybin_mc', 'zbin_mc'), 
                               out = ('deco_bin'))
     
     creates_diff_df = fl.map(diff_df_creator(), 
-                             args = ('event_number', 'x_bin', 'y_bin', 'z_bin', 'e_bin', 'nph_bin', 'binclass', 'seg_bin', 'deco_bin'), 
+                             args = ('event_number', 'x_bin', 'y_bin', 'z_bin', 'x_mean', 'y_mean', 'z_mean', 'e_bin', 'nph_bin', 'binclass', 'new_seg_bin', 'deco_bin', 'ext_bin'), 
                              out = ('vox_diff_df'))
 
     count_photons = fl.map(lambda x: np.sum(x) > 0,
@@ -364,12 +427,14 @@ def diffsim( *
                                         , assign_binclass
                                         , creates_hits_part_df
                                         , assign_segclass
+                                        , create_bins
                                         , voxelize_mc
                                         , simulate_electrons
                                         , filter_events_out_fiducial
                                         , fl.branch(write_fiducial_filter)
                                         , fiducial_events.filter
                                         , voxelize_events
+                                        , create_extlabel
                                         , create_decolabel
                                         , count_photons
                                         , fl.branch(write_dark_evt_filter)
