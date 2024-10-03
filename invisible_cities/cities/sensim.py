@@ -38,9 +38,7 @@ from .. detsim.simulate_electrons import generate_ionization_electrons
 from .. detsim.simulate_electrons import drift_electrons
 from .. detsim.simulate_electrons import diffuse_electrons
 from .. detsim.light_tables_c     import LT_SiPM
-# from .. detsim.light_tables_c     import LT_PMT
 from .. detsim.s2_waveforms_c     import create_wfs_label
-# from .. detsim.detsim_waveforms   import s1_waveforms_creator
 
 from .diffsim import binclass_creator
 from .diffsim import hits_particle_df_creator
@@ -138,17 +136,6 @@ def s2_waveform_creator_sensim(sns_bin_width, LT, el_drift_velocity):
         return np.random.poisson(waveforms)
     return create_s2_waveform
 
-
-# def bin_edges_getter(pmt_width, sipm_width):
-#     """
-#     Auxiliar function that returns the waveform bin edges
-#     """
-#     def get_bin_edges(pmt_wfs, sipm_wfs):
-#         pmt_bins  = np.arange(0, pmt_wfs .shape[1]) * pmt_width
-#         sipm_bins = np.arange(0, sipm_wfs.shape[1]) * sipm_width
-#         return pmt_bins, sipm_bins
-#     return get_bin_edges
-
 def bin_edges_getter_sensim(sipm_width):
     """
     Auxiliar function that returns the waveform bin edges
@@ -223,8 +210,6 @@ def sensim( *
           , compression    : str
           , detector_db    : str
           , run_number     : int
-        #   , s1_lighttable  : str
-        #   , s2_lighttable  : str
           , sipm_psf       : str
           , buffer_params  : dict
           , physics_params : dict
@@ -293,27 +278,9 @@ def sensim( *
                                          args = ('time', 'times_ph'),
                                          out = ('tmin', 'buffer_length'))
 
-    # create_pmt_s1_waveforms = fl.map(s1_waveforms_creator(s1_lighttable, ws, buffer_params_["pmt_width"]),
-    #                                  args = ('x', 'y', 'z', 'time', 'energy', 'tmin', 'buffer_length'),
-    #                                  out = 's1_pmt_waveforms')
-
-    # create_pmt_s2_waveforms = fl.map(s2_waveform_creator(buffer_params_["pmt_width"], lt_pmt, el_dv),
-    #                                  args = ('x_ph', 'y_ph', 'times_ph', 'nphotons', 'tmin', 'buffer_length'),
-    #                                  out = 's2_pmt_waveforms')
-
-    # sum_pmt_waveforms = fl.map(lambda x, y : x+y,
-    #                            args = ('s1_pmt_waveforms', 's2_pmt_waveforms'),
-    #                            out = 'pmt_bin_wfs')
-
-    # create_pmt_waveforms = fl.pipe(create_pmt_s1_waveforms, create_pmt_s2_waveforms, sum_pmt_waveforms)
-
     create_sipm_waveforms = fl.map(s2_waveform_creator_sensim(buffer_params_["sipm_width"], lt_sipm, el_dv),
                                    args = ('x_ph', 'y_ph', 'times_ph', 'segclass_ph', 'nphotons', 'tmin', 'buffer_length'),
                                    out = 'sipm_bin_wfs')
-
-    # get_bin_edges  = fl.map(bin_edges_getter(buffer_params_["pmt_width"], buffer_params_["sipm_width"]),
-    #                         args = ('pmt_bin_wfs', 'sipm_bin_wfs'),
-    #                         out = ('pmt_bins', 'sipm_bins'))
 
     get_bin_edges  = fl.map(bin_edges_getter_sensim(buffer_params_["sipm_width"]),
                             args = ('sipm_bin_wfs'),
@@ -326,22 +293,6 @@ def sensim( *
     evtnum_collect = collect()
 
     with tb.open_file(file_out, "w", filters = tbl.filters(compression)) as h5out:
-        # buffer_calculation = calculate_and_save_buffers( buffer_params_["length"]
-        #                                                , buffer_params_["max_time"]
-        #                                                , buffer_params_["pre_trigger"]
-        #                                                , buffer_params_["pmt_width"]
-        #                                                , buffer_params_["sipm_width"]
-        #                                                , buffer_params_["trigger_thr"]
-        #                                                , h5out
-        #                                                , run_number
-        #                                                , len(datapmt)
-        #                                                , len(datasipm)
-        #                                                , int(buffer_params_["length"] /
-        #                                                  buffer_params_["pmt_width"])
-        #                                                , int(buffer_params_["length"] /
-        #                                                  buffer_params_["sipm_width"])
-        #                                                , order_sensors = None)
-
         write_nohits_filter   = fl.sink(event_filter_writer(h5out, "active_hits"), args=("event_number", "passed_active") )
         write_dark_evt_filter = fl.sink(event_filter_writer(h5out, "dark_events"), args=("event_number", "enough_photons"))
         write_sns             = fl.sink(sns_writer         (h5out = h5out       ), args=("sipm_df")                       )
