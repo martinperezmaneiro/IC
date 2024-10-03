@@ -38,14 +38,15 @@ from .. core   .exceptions        import           MCEventNotFound
 from .. core   .exceptions        import              NoInputFiles
 from .. core   .exceptions        import              NoOutputFile
 from .. core   .exceptions        import InvalidInputFileStructure
+from .. core   .exceptions        import          SensorIDMismatch
 from .. core   .configure         import          event_range_help
 from .. core   .configure         import         check_annotations
 from .. core   .random_sampling   import              NoiseSampler
 from .. detsim                    import          buffer_functions as  bf
+from .. detsim                    import          sensor_functions as  sf
 from .. detsim .sensor_utils      import             trigger_times
-from .. reco                      import           calib_functions as  cf
-from .. reco                      import          sensor_functions as  sf
-from .. reco                      import   calib_sensors_functions as csf
+from .. calib                     import           calib_functions as  cf
+from .. calib                     import   calib_sensors_functions as csf
 from .. reco                      import            peak_functions as pkf
 from .. reco                      import           pmaps_functions as pmf
 from .. reco                      import            hits_functions as hif
@@ -70,6 +71,7 @@ from .. io     .rwf_io            import             buffer_writer
 from .. io     .mcinfo_io         import            load_mchits_df
 from .. io     .mcinfo_io         import       load_mcparticles_df
 from .. io     .mcinfo_io         import          load_mcstringmap
+from .. io     .mcinfo_io         import         is_oldformat_file
 from .. io     .dst_io            import                 df_writer
 from .. types  .ic_types          import                  NoneType
 from .. types  .ic_types          import                        xy
@@ -118,10 +120,10 @@ def city(city_function):
             conf.files_in = [conf.files_in]
 
         globbed_files = map(glob, map(expandvars, conf.files_in))
-        globbed_files = sorted(f for fs in globbed_files for f in fs)
+        globbed_files = list(f for fs in globbed_files for f in fs)
         if len(set(globbed_files)) != len(globbed_files):
             warnings.warn("files_in contains repeated values. Ignoring duplicate files.", UserWarning)
-            globbed_files = sorted(set(globbed_files))
+            globbed_files = [f for i, f in enumerate(globbed_files) if f not in globbed_files[:i]]
 
         conf.files_in = globbed_files
         conf.file_out = expandvars(conf.file_out)
@@ -130,7 +132,8 @@ def city(city_function):
         # TODO There were deamons! self.daemons = tuple(map(summon_daemon, kwds.get('daemons', [])))
 
         result = check_annotations(city_function)(**vars(conf))
-        index_tables(conf.file_out)
+        if os.path.exists(conf.file_out):
+            index_tables(conf.file_out)
         return result
     return proxy
 
@@ -462,6 +465,15 @@ def mcsensors_from_file(paths     : List[str],
                                                        return_raw = False     ,
                                                        db_file    = db_file   ,
                                                        run_no     = run_number)
+
+        if not is_oldformat_file(file_name):
+            nexus_sns_pos = pd.read_hdf(file_name, 'MC/sns_positions')
+            pmt_condition = nexus_sns_pos.sensor_name.str.casefold().str.contains('pmt')
+            nexus_pmt_ids = nexus_sns_pos[pmt_condition].sensor_id
+
+            if not nexus_pmt_ids.isin(pmt_ids).all():
+                raise SensorIDMismatch('Some PMT IDs in nexus file do not appear in database')
+
 
         for evt in mcinfo_io.get_event_numbers_in_file(file_name):
 

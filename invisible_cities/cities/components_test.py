@@ -13,6 +13,7 @@ from pytest import warns
 
 from .. core.configure     import configure
 from .. core.exceptions    import InvalidInputFileStructure
+from .. core.exceptions    import          SensorIDMismatch
 from .. core.testing_utils import    assert_tables_equality
 from .. core               import system_of_units as units
 from .. types.symbols      import WfType
@@ -150,6 +151,36 @@ def test_city_files_in(case_, files_in, expected, config_tmpdir, ICDATADIR):
 
     result = dummy_city(**conf)
     assert sorted(result) == sorted(expected)
+
+
+@mark.parametrize("order", ((0,1), (1,0)))
+def test_city_keeps_input_file_ordering(ICDATADIR, config_tmpdir, order):
+    files_in = [ os.path.join(ICDATADIR, "electrons_511keV_z250_RWF.h5")
+               , os.path.join(ICDATADIR, "electrons_1250keV_z250_RWF.h5") ]
+    files_in = [files_in[i] for i in order]
+
+    @city
+    def dummy_city( files_in    : Union[str, list]
+                  , file_out    : str
+                  , event_range : tuple):
+        with tb.open_file(file_out, "w"): pass
+        return files_in
+
+    config_file = os.path.join(config_tmpdir, f"test_city_keeps_input_file_ordering.conf")
+    file_out    = os.path.join(config_tmpdir, f"test_city_keeps_input_file_ordering.h5"  )
+
+    write_config_file( config_file
+                     , files_in    = files_in
+                     , file_out    = file_out
+                     , event_range = 0
+                     )
+
+    conf = configure(f"dummy {config_file}".split())
+
+    result = dummy_city(**conf)
+
+    # no sorting: ensure that the files keep their original ordering
+    assert result == files_in
 
 
 def test_compute_xy_position_depends_on_actual_run_number():
@@ -391,3 +422,16 @@ def test_check_max_time_units():
 
     with raises(ValueError):
         check_max_time(max_time, buffer_length)
+
+def test_read_wrong_pmt_ids(ICDATADIR):
+    """
+    The input file of this test contains sensor IDs that are not present in the database.
+    This should raise an error and this test check that it is actually raised.
+    """
+    file_in    = os.path.join(ICDATADIR, "nexus_next100_full_wrong_PMT_IDs.h5")
+    run_number = 0
+    rate       = 0.5
+
+    sns_gen = mcsensors_from_file([file_in], 'next100', run_number, rate)
+    with raises(SensorIDMismatch):
+        next(sns_gen)

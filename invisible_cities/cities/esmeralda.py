@@ -36,7 +36,7 @@ import tables as tb
 
 from .. core.configure      import EventRangeType
 from .. core.configure      import OneOrManyFiles
-from .. reco                import tbl_functions        as tbl
+from .. core                import tbl_functions        as tbl
 from .. evm                 import event_model          as evm
 from .. dataflow            import dataflow             as fl
 from .. dataflow.dataflow   import push
@@ -55,6 +55,10 @@ from .  components import identity
 from .. io.         hits_io import hits_writer
 from .. io.         kdst_io import kdst_from_df_writer
 from .. io.run_and_event_io import run_and_event_writer
+
+from .. types.ic_types import NoneType
+
+from typing import Union
 
 
 def hit_dropper(radius : float):
@@ -80,8 +84,8 @@ def esmeralda( files_in         : OneOrManyFiles
              , same_peak        : bool
              , fiducial_r       : float
              , paolina_params   : dict
-             , corrections_file : str
-             , apply_temp       : bool
+             , corrections_file : Union[ str, NoneType]
+             , apply_temp       : Union[bool, NoneType]
              ):
     """
     The city applies a threshold to sipm hits and extracts
