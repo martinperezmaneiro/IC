@@ -29,7 +29,7 @@ from ..core.configure import check_annotations
 from ..core.configure import EventRangeType
 from ..core.configure import OneOrManyFiles
 
-from ..reco     import tbl_functions as tbl
+from .. core     import tbl_functions as tbl
 from .. dataflow import dataflow      as fl
 
 from ..io.event_filter_io  import event_filter_writer

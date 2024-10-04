@@ -27,7 +27,7 @@ from .. core.configure import check_annotations
 from .. core.configure import EventRangeType
 from .. core.configure import OneOrManyFiles
 
-from .. reco     import tbl_functions as tbl
+from .. core     import tbl_functions as tbl
 from .. database import load_db       as db
 from .. dataflow import dataflow      as fl
 
