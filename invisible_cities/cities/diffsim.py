@@ -165,15 +165,17 @@ def extlabel_creator(segclass_dct):
         ext_df = ext_df[ext_df.ext != 0]
         for i in range(3): ext_df[coords[i] + 'bin'] = pd.cut(ext_df[coords[i]], bins[i], labels = np.arange(0, len(bins[i])-1)).astype('int')
         ext_df = ext_df.drop(coords, axis = 1).rename(columns={'xbin':'x', 'ybin':'y', 'zbin':'z'})
+        ext_df = ext_df.groupby(coords).agg({'ext':'sum'}).reset_index() # if both extremes are in the same voxel, give them the sum of the labels
 
         vox_df = pd.DataFrame({'x':xbin, 'y':ybin, 'z':zbin, 'segclass':segbin})
         vox_df = vox_df.merge(ext_df, how = 'outer').fillna(0)
         vox_df['ext'] = vox_df['ext'].astype(int)
         # Make sure that certain extremes have blob label
+        # add label 3 (both extremes in the same voxel), its always a blob voxel
         if binclass == 0:
-            vox_df.loc[(vox_df['ext'] == 1), 'segclass'] = segclass_dct['blob']
+            vox_df.loc[vox_df['ext'].isin([1, 3]), 'segclass'] = segclass_dct['blob']
         if binclass == 1:
-            vox_df.loc[vox_df['ext'].isin([1, 2]), 'segclass'] = segclass_dct['blob']
+            vox_df.loc[vox_df['ext'].isin([1, 2, 3]), 'segclass'] = segclass_dct['blob']
         return vox_df.segclass.values, vox_df.ext.values
     
     return add_extlabel
