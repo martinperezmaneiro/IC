@@ -354,6 +354,11 @@ def diffsim( *
                                           out = 'passed_active')
     events_passed_active_hits = fl.count_filter(bool, args='passed_active')
 
+    filter_events_out_fiducial_mc = fl.map(event_fiducial_selector(**{key: voxel_params[key] for key in ['xlim', 'ylim', 'zlim']}), 
+                                        args = ('x_a', 'y_a', 'z_a'), 
+                                        out = 'passed_fiducial_mc')
+    fiducial_events_mc = fl.count_filter(bool, args='passed_fiducial_mc')
+
     assign_binclass = fl.map(binclass_creator(label_params['sig_creator']), 
                              args = ('particle_id', 'particle_name', 'creator_proc', 'hit_part_id'), 
                              out  = 'binclass')
@@ -409,10 +414,11 @@ def diffsim( *
     evtnum_collect = collect()
 
     with tb.open_file(file_out, "w", filters = tbl.filters(compression)) as h5out:
-        write_nohits_filter   = fl.sink(event_filter_writer(h5out, "active_hits"), args=("event_number", "passed_active")  )
-        write_dark_evt_filter = fl.sink(event_filter_writer(h5out, "dark_events"), args=("event_number", "enough_photons") )
-        write_fiducial_filter = fl.sink(event_filter_writer(h5out,  "fid_events"), args=("event_number", "passed_fiducial"))
-        write_diff            = fl.sink(diff_writer        (h5out = h5out       ), args=("vox_diff_df")                    )
+        write_nohits_filter      = fl.sink(event_filter_writer(h5out, "active_hits"), args=("event_number", "passed_active")     )
+        write_fiducial_filter_mc = fl.sink(event_filter_writer(h5out,   "fid_ev_mc"), args=("event_number", "passed_fiducial_mc"))
+        write_dark_evt_filter    = fl.sink(event_filter_writer(h5out, "dark_events"), args=("event_number", "enough_photons")    )
+        write_fiducial_filter    = fl.sink(event_filter_writer(h5out,  "fid_events"), args=("event_number", "passed_fiducial")   )
+        write_diff               = fl.sink(diff_writer        (h5out = h5out       ), args=("vox_diff_df")                       )
 
         result = fl.push(source= MC_hits_and_part_from_files(files_in, rate),
                          pipe  = fl.pipe( fl.slice(*event_range, close_all=True)
@@ -424,6 +430,9 @@ def diffsim( *
                                         , filter_events_no_active_hits
                                         , fl.branch(write_nohits_filter)
                                         , events_passed_active_hits.filter
+                                        , filter_events_out_fiducial_mc
+                                        , fl.branch(write_fiducial_filter_mc)
+                                        , fiducial_events_mc.filter
                                         , assign_binclass
                                         , creates_hits_part_df
                                         , assign_segclass
