@@ -256,7 +256,7 @@ def sensim( *
     
     assign_segclass = fl.map(segclass_creator(**label_params), 
                              args = ('hits_part_df', 'binclass'), 
-                             out  = 'segclass_a')
+                             out  = ('segclass_a', 'ext_a'))
 
     simulate_electrons = fl.map(ielectron_simulator_diffsim(**physics_params_),
                                 args = ('x_a', 'y_a', 'z_a', 'time_a', 'energy_a', 'segclass_a'),
