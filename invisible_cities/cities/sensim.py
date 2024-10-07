@@ -175,7 +175,7 @@ def sns_signal_getter(datasipm, dv, qcut):
         sipm_df = xy_positions.copy()
         sipm_df['z_slice']  = zbin
         sipm_df['pes']      = pes
-        sipm_df['segclass'] = seg + 1 # return to original labels
+        sipm_df['segclass'] = seg + 1 # return to original labels, because here we used position 
         sipm_df['event']    = nevent
         sipm_df['binclass'] = binclass
 
@@ -226,10 +226,7 @@ def sensim( *
     ws    = physics_params_.pop("ws")
     el_dv = physics_params_.pop("el_drift_velocity")
 
-    # derived parameters
-    # datapmt  = db.DataPMT (detector_db, run_number)
     datasipm = db.DataSiPM(detector_db, run_number)
-    # lt_pmt   = LT_PMT (fname=os.path.expandvars(s2_lighttable))
     lt_sipm  = LT_SiPM(fname=os.path.expandvars(sipm_psf), sipm_database=datasipm)
     el_gap   = lt_sipm.el_gap_width
 
@@ -316,12 +313,10 @@ def sensim( *
                                         , fl.branch(write_dark_evt_filter)
                                         , dark_events.filter
                                         , get_buffer_times_and_length
-                                        # , create_pmt_waveforms
                                         , create_sipm_waveforms
                                         , get_bin_edges
                                         , get_sns_signal
                                         , fl.branch(write_sns)
-                                        # , buffer_calculation
                                         , "event_number"
                                         , evtnum_collect.sink),
                          result = dict(events_in     = event_count_in.future,
