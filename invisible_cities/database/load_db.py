@@ -15,6 +15,9 @@ class DetDB:
     #Different pitch DBs
     next100_10mm = os.environ['ICTDIR'] + '/invisible_cities/database/localdb.NEXT100_10mm.sqlite3'
     next100_15mm = os.environ['ICTDIR'] + '/invisible_cities/database/localdb.NEXT100_15mm.sqlite3'
+    next100_5mm  = os.environ['ICTDIR'] + '/invisible_cities/database/localdb.NEXT100_
+
+5mm.sqlite3'
 
 def tmap(*args):
     return tuple(map(*args))
