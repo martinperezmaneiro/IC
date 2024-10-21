@@ -319,6 +319,18 @@ def diff_writer(h5out):
                          columns_to_index   = ['event']                     )
     return write_diff
 
+def voxel_info_writer(h5out, voxel_params):
+    def write_voxel_info():
+        voxel_info_df = pd.Series({'min_x' : voxel_params['xlim'][0], 'max_x' : voxel_params['xlim'][1], 'nbins_x' : voxel_params['nbins_x'],
+                                   'min_y' : voxel_params['ylim'][0], 'max_y' : voxel_params['ylim'][1], 'nbins_y' : voxel_params['nbins_y'],
+                                   'min_z' : voxel_params['zlim'][0], 'max_z' : voxel_params['zlim'][1], 'nbins_z' : voxel_params['nbins_z']}).to_frame().T
+        df_writer(h5out              = h5out                  ,
+                  df                 = voxel_info_df          ,
+                  group_name         = 'Diffsim'              ,
+                  table_name         = 'voxel_info'           ,
+                  descriptive_string = 'Info about voxel size')
+    return write_voxel_info
+
 @city
 def diffsim( *
             , files_in       : OneOrManyFiles
@@ -457,7 +469,8 @@ def diffsim( *
                          result = dict(events_in     = event_count_in.future,
                                        evtnum_list   = evtnum_collect.future,
                                        dark_events   = dark_events   .future))
-
+        
+        voxel_info_writer(h5out, voxel_params)()
         copy_mc_info(files_in, h5out, result.evtnum_list,
                      detector_db, run_number)
 
