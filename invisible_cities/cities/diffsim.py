@@ -168,7 +168,16 @@ def extlabel_creator(segclass_dct):
         ext_df = ext_df.groupby(coords).agg({'ext':'sum'}).reset_index() # if both extremes are in the same voxel, give them the sum of the labels
 
         vox_df = pd.DataFrame({'x':xbin, 'y':ybin, 'z':zbin, 'segclass':segbin})
-        vox_df = vox_df.merge(ext_df, how = 'outer').fillna(0)
+        vox_df = vox_df.merge(ext_df, how = 'left').fillna(0)
+    
+        # Make sure that if some MC extreme is out (for sensim, near the borders it can happen)
+        # The ext label is given to the closest voxel
+        out_ext = vox_df.merge(ext_df, how = 'outer', indicator=True)
+        for idx, row in out_ext[out_ext._merge == 'right_only'].iterrows():
+            print('Warning / error : Extreme voxel from MC had no coincidence with the track. Asigning to nearest voxel.')
+            fix_idx = np.linalg.norm((vox_df[coords] - row[coords]).values.astype(float), axis = 1).argmin()
+            vox_df.iloc[[fix_idx], 4] = row['ext']
+
         vox_df['ext'] = vox_df['ext'].astype(int)
         # Make sure that certain extremes have blob label
         # add label 3 (both extremes in the same voxel), its always a blob voxel
