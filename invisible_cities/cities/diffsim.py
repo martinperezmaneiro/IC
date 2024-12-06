@@ -155,11 +155,11 @@ def segclass_creator(sig_creator : str, segclass_dct : dict, delta_ener_loss : f
         return label_hits.segclass.values, ext
     return add_segclass
 
-def extlabel_creator(segclass_dct):
+def extlabel_creator(segclass_dct, bins):
     '''
     Adds extreme label to voxels, and forces some of them to be blob class
     '''
-    def add_extlabel(x, y, z, ext, bins, xbin, ybin, zbin, segbin, binclass):
+    def add_extlabel(x, y, z, ext, xbin, ybin, zbin, segbin, binclass):
         coords = ['x', 'y', 'z']
         ext_df = pd.DataFrame({'x':x, 'y':y, 'z':z, 'ext':ext})
         ext_df = ext_df[ext_df.ext != 0]
@@ -251,7 +251,7 @@ def bins_creator(*, xlim : tuple, nbins_x : int,
     return create_bins
 
 @check_annotations
-def voxel_creator():
+def voxel_creator(bins : tuple):
     """
     Aggregates all the diffussion electrons with (x, y, z, E, nphotons) in 
     voxels of certain size (total size / (nbins - 1)), adding the energy 
@@ -262,7 +262,7 @@ def voxel_creator():
     # this voxel, but we add a weight for each class to give more importance
     # to certain classes using a dict with {class_number:weight}
     """
-    def create_voxels(x, y, z, bins, energy, nphotons, segclass): 
+    def create_voxels(x, y, z, energy, nphotons, segclass): 
 
         xbin = pd.cut(x, bins[0], labels = np.arange(0, len(bins[0])-1)).astype('int')
         ybin = pd.cut(y, bins[1], labels = np.arange(0, len(bins[1])-1)).astype('int')
@@ -361,6 +361,8 @@ def diffsim( *
 
     buffer_params_["max_time"] = check_max_time(buffer_params_["max_time"], buffer_params_["length"])
 
+    bins = bins_creator(**voxel_params)()
+
     filter_delayed_hits = fl.map(filter_hits_after_max_time(buffer_params_["max_time"]),
                                  args = ('x', 'y', 'z', 'energy', 'time', 'label', 'hit_id', 'hit_part_id', 'event_number'),
                                  out  = ('x', 'y', 'z', 'energy', 'time', 'label', 'hit_id', 'hit_part_id'))
@@ -393,12 +395,9 @@ def diffsim( *
     assign_segclass = fl.map(segclass_creator(**label_params), 
                              args = ('hits_part_df', 'binclass'), 
                              out  = ('segclass_a', 'ext_a'))
-    create_bins = fl.map(bins_creator(**voxel_params), 
-                        args = (), 
-                        out = 'bins')
     
-    voxelize_mc = fl.map(voxel_creator(), 
-                             args = ('x_a', 'y_a', 'z_a', 'bins', 'energy_a', 'time_a', 'segclass_a'), # using time here to fill the function with something
+    voxelize_mc = fl.map(voxel_creator(bins), 
+                             args = ('x_a', 'y_a', 'z_a', 'energy_a', 'time_a', 'segclass_a'), # using time here to fill the function with something
                              out = ('xbin_mc', 'ybin_mc', 'zbin_mc', '_', '_', '_', 'ebin_mc', '_', 'segbin_mc'))
 
     simulate_electrons = fl.map(ielectron_simulator_diffsim(**physics_params_),
@@ -411,12 +410,12 @@ def diffsim( *
     
     fiducial_events = fl.count_filter(bool, args='passed_fiducial')
 
-    voxelize_events = fl.map(voxel_creator(), 
-                             args = ('x_ph', 'y_ph', 'z_ph', 'bins', 'energy_ph', 'nphotons', 'segclass_ph'), 
+    voxelize_events = fl.map(voxel_creator(bins), 
+                             args = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'nphotons', 'segclass_ph'), 
                              out = ('x_bin', 'y_bin', 'z_bin', 'x_mean', 'y_mean', 'z_mean', 'e_bin', 'nph_bin', 'seg_bin'))
     
-    create_extlabel = fl.map(extlabel_creator(label_params['segclass_dct']), 
-                             args = ('x_a', 'y_a', 'z_a', 'ext_a', 'bins', 'x_bin', 'y_bin', 'z_bin', 'seg_bin', 'binclass'),
+    create_extlabel = fl.map(extlabel_creator(label_params['segclass_dct'], bins), 
+                             args = ('x_a', 'y_a', 'z_a', 'ext_a', 'x_bin', 'y_bin', 'z_bin', 'seg_bin', 'binclass'),
                              out = ('new_seg_bin', 'ext_bin'))
     
     create_decolabel = fl.map(decolabel_creator(), 
@@ -459,7 +458,6 @@ def diffsim( *
                                         , assign_binclass
                                         , creates_hits_part_df
                                         , assign_segclass
-                                        , create_bins
                                         , voxelize_mc
                                         , simulate_electrons
                                         , filter_events_out_fiducial
