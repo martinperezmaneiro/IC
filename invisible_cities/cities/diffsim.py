@@ -266,7 +266,7 @@ def voxel_creator(bins : tuple):
 
         xbin = pd.cut(x, bins[0], labels = np.arange(0, len(bins[0])-1)).astype('int')
         ybin = pd.cut(y, bins[1], labels = np.arange(0, len(bins[1])-1)).astype('int')
-        zbin = pd.cut(z, bins[2], labels = np.arange(0, len(bins[2])-1)).astype('int')
+        zbin = pd.cut(z, bins[2], labels = np.arange(0, len(bins[2])-1), include_lowest = True).astype('int')
 
         df = pd.DataFrame({'xbin' : xbin, 'ybin' : ybin, 'zbin' : zbin, 'x' : x, 'y' : y, 'z' : z, 'energy' : energy, 'nphotons' : nphotons, 'segclass' : segclass}) 
 
