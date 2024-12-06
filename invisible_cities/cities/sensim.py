@@ -15,6 +15,7 @@ import os
 import warnings
 import numpy  as np
 import tables as tb
+import pandas as pd
 
 from . components import city
 from . components import print_every
@@ -37,13 +38,18 @@ from .. io.dst_io           import df_writer
 from .. detsim.simulate_electrons import generate_ionization_electrons
 from .. detsim.simulate_electrons import drift_electrons
 from .. detsim.simulate_electrons import diffuse_electrons
+from .. detsim.simulate_electrons import distribute_hits_energy_among_electrons
+
 from .. detsim.light_tables_c     import LT_SiPM
 from .. detsim.s2_waveforms_c     import create_wfs_label
 
+from .diffsim import event_fiducial_selector
 from .diffsim import binclass_creator
 from .diffsim import hits_particle_df_creator
 from .diffsim import segclass_creator
-from .diffsim import ielectron_simulator_diffsim
+from .diffsim import voxel_creator
+from .diffsim import extlabel_creator
+from .diffsim import decolabel_creator
 
 @check_annotations
 def filter_hits_after_max_time(max_time : float):
@@ -89,9 +95,9 @@ def hits_selector(active_only: bool=True):
     return select_hits
 
 @check_annotations
-def ielectron_simulator(*, wi: float, fano_factor: float, lifetime: float,
-                        transverse_diffusion: float, longitudinal_diffusion: float, drift_velocity:float,
-                        el_gain: float, conde_policarpo_factor: float):
+def ielectron_simulator_sensim(*, wi: float, fano_factor: float, lifetime: float,
+                                transverse_diffusion: float, longitudinal_diffusion: float, drift_velocity:float,
+                                el_gain: float, conde_policarpo_factor: float, mesh_displacement: float, el_drift_velocity: float):
     """
     Function that simulates electron creation, drift, diffusion and photon generation at the EL
 
@@ -101,16 +107,47 @@ def ielectron_simulator(*, wi: float, fano_factor: float, lifetime: float,
         :simulate_ielectrons:
             function that returns the positions emission times and number of photons at the EL
     """
-    def simulate_ielectrons(x, y, z, time, energy):
-        nelectrons = generate_ionization_electrons(energy, wi, fano_factor)
-        nelectrons = drift_electrons(z, nelectrons, lifetime, drift_velocity)
-        dx, dy, dz = diffuse_electrons(x, y, z, nelectrons, transverse_diffusion, longitudinal_diffusion)
-        dtimes = dz/drift_velocity + np.repeat(time, nelectrons)
+    def simulate_ielectrons(x, y, z, time, energy, label):
+        nelectrons  = generate_ionization_electrons(energy, wi, fano_factor)
+        nelectrons  = drift_electrons(z, nelectrons, lifetime, drift_velocity)
+        dx, dy, dz  = diffuse_electrons(x, y, z, nelectrons, transverse_diffusion, longitudinal_diffusion)
+        nelec_ener  = distribute_hits_energy_among_electrons(nelectrons, energy)
+        nelec_label = np.repeat(label, nelectrons)
+        dtimes = dz/drift_velocity + np.repeat(time, nelectrons) + mesh_displacement / el_drift_velocity # padding the mesh displacement for reduced EL simulation
         nphotons = np.random.normal(el_gain, np.sqrt(el_gain * conde_policarpo_factor), size=nelectrons.sum())
         nphotons = np.round(nphotons).astype(np.int32)
-        return dx, dy, dz, dtimes, nphotons
+        return dx, dy, dz, nelec_ener, dtimes, nphotons, nelec_label
     return simulate_ielectrons
 
+def mc_z_drifted(dv, dv_el, mesh_disp):
+    '''
+    Function that adds the drift time to the z MC position
+    '''
+    def drift_mc_z(z, time):
+        correct_z = z + time * dv + mesh_disp * dv / dv_el
+        return correct_z
+    return drift_mc_z
+
+def bins_creator_sensim(datasipm, zmin, zmax, z_rebin, dv, sipm_width):
+    xsipm, ysipm = datasipm["X"], datasipm["Y"]
+
+    xmin, xmax = xsipm.min(), xsipm.max()
+    ymin, ymax = ysipm.min(), ysipm.max()
+
+    xbin = round(xsipm.drop_duplicates().sort_values().diff().dropna().max(), 3)
+    ybin = round(ysipm.drop_duplicates().sort_values().diff().dropna().max(), 3)
+    zbin = dv * sipm_width * z_rebin
+
+    bin_info = dict(min = (xmin - xbin / 2, ymin - ybin / 2, zmin), 
+                    max = (xmax + xbin / 2, ymax + ybin / 2, zmax), 
+                    binsize = (xbin, ybin, zbin))
+
+    def create_bins():
+        bins = []
+        for mi, ma, si in zip(bin_info['min'], bin_info['max'], bin_info['binsize']):
+            bins.append(np.arange(mi, ma + si, si))
+        return tuple(bins), bin_info
+    return create_bins
 
 def buffer_times_and_length_getter(pmt_width, sipm_width, el_gap, el_dv, max_length):
     """
@@ -151,7 +188,7 @@ def sns_signal_getter(datasipm, dv, qcut):
     for each SiPM in each time bin (Z position)
     Also uses qcut to put a threshold on the pes of each SiPM
     '''
-    def get_sns_signal(sipm_bin_wfs_seg, sipm_bins, event_energy, nevent, binclass):
+    def get_sns_signal(sipm_bin_wfs_seg, sipm_bins, event_energy):
         # collapse all the 3 histograms into one 
         sipm_bin_wfs = sipm_bin_wfs_seg.sum(axis = 0)
         # extract the sipms that had signal in a certain time bin
@@ -159,9 +196,10 @@ def sns_signal_getter(datasipm, dv, qcut):
 
         # get the positions of those sipms
         xy_positions = datasipm.loc[values_index[0]][['X', 'Y']].rename(columns = {'X':'x_sipm', 'Y':'y_sipm'})
+        x_sipm, y_sipm = xy_positions.x_sipm.values, xy_positions.y_sipm.values
         # get the time bin of those and transform into Z position
         tbin = sipm_bins[values_index[1]]
-        zbin = tbin * dv
+        z_slice = tbin * dv
 
         # get the number of photons
         pes = sipm_bin_wfs[values_index]
@@ -169,24 +207,43 @@ def sns_signal_getter(datasipm, dv, qcut):
         # get the segmentation class from 3 histograms, choosing the label that created more gammas in a sensor and bin
         seg_bin_wfs = sipm_bin_wfs_seg.argmax(axis = 0)
         # choose only where there is any signal
-        seg = seg_bin_wfs[values_index]
+        seg = seg_bin_wfs[values_index] + 1 # returning to original labels
+        # Do the cut in Q
+        q_mask = pes > qcut
 
-        # Create the df
-        sipm_df = xy_positions.copy()
-        sipm_df['z_slice']  = zbin
-        sipm_df['pes']      = pes
-        sipm_df['segclass'] = seg + 1 # return to original labels, because here we used position 
-        sipm_df['event']    = nevent
-        sipm_df['binclass'] = binclass
+        energy = (pes[q_mask] / pes[q_mask].sum()) * event_energy.sum()
 
-        # We put a threshold on pes for the SiPMs
-        sipm_df = sipm_df[sipm_df['pes'] > qcut]
-
-        # Finally we distribute the total energy of the event
-        sipm_df['energy']   = (sipm_df['pes'] / sipm_df['pes'].sum()) * event_energy.sum()
-
-        return sipm_df[['event', 'x_sipm', 'y_sipm', 'z_slice', 'energy', 'pes', 'binclass', 'segclass']]
+        return x_sipm[q_mask], y_sipm[q_mask], z_slice[q_mask], energy, pes[q_mask], seg[q_mask] 
     return get_sns_signal
+
+def sns_df_creator():
+    def create_sns_df(evt, x, y, z, energy, pes, binclass, segclass):
+        return pd.DataFrame({'event'    : evt, 
+                             'x_sipm'   : x, 
+                             'y_sipm'   : y, 
+                             'z_slice'  : z, 
+                             'energy'   : energy, 
+                             'pes'      : pes, 
+                             'binclass' : binclass,
+                             'segclass' : segclass})
+    return create_sns_df
+
+def sns_vox_df_creator():
+    def create_sns_vox_df(evt, x, y, z, xmean, ymean, zmean, energy, pes, binclass, segclass, decolabel, extlabel):
+        return pd.DataFrame({'event'     : evt, 
+                             'xbin'      : x, 
+                             'ybin'      : y, 
+                             'zbin'      : z, 
+                             'x_mean'    : xmean,
+                             'y_mean'    : ymean,
+                             'z_mean'    : zmean,
+                             'ebin'      : energy, 
+                             'pesbin'    : pes, 
+                             'binclass'  : binclass,
+                             'segclass'  : segclass, 
+                             'decolabel' : decolabel,
+                             'extlabel'  : extlabel})
+    return create_sns_vox_df
 
 def sns_writer(h5out):
     """
@@ -201,6 +258,31 @@ def sns_writer(h5out):
                          columns_to_index   = ['event']            )
     return write_sns
 
+def sns_vox_writer(h5out):
+    """
+    For a given open table returns a writer for diffusion electrons dataframe
+    """
+    def write_sns_vox(df):
+        return df_writer(h5out              = h5out                ,
+                         df                 = df                   ,
+                         group_name         = 'Sensim'             ,
+                         table_name         = 'sns_vox_df'         ,
+                         descriptive_string = 'Voxelized sns track',
+                         columns_to_index   = ['event']            )
+    return write_sns_vox
+
+def voxel_info_writer(h5out, bin_info):
+    def write_voxel_info():
+        voxel_info_df = pd.Series({'min_x' : bin_info['min'][0], 'max_x' : bin_info['max'][0], 'size_x' : bin_info['binsize'][0],
+                                   'min_y' : bin_info['min'][1], 'max_y' : bin_info['max'][1], 'size_y' : bin_info['binsize'][1],
+                                   'min_z' : bin_info['min'][2], 'max_z' : bin_info['max'][2], 'size_z' : bin_info['binsize'][2]}).to_frame().T
+        df_writer(h5out              = h5out                  ,
+                  df                 = voxel_info_df          ,
+                  group_name         = 'Sensim'               ,
+                  table_name         = 'voxel_info'           ,
+                  descriptive_string = 'Info about voxel size')
+    return write_voxel_info
+
 @city
 def sensim( *
           , files_in       : OneOrManyFiles
@@ -213,6 +295,7 @@ def sensim( *
           , sipm_psf       : str
           , buffer_params  : dict
           , physics_params : dict
+          , zvox_params    : dict
           , label_params   : dict
           , qcut           : int
           , rate           : float
@@ -223,12 +306,13 @@ def sensim( *
 
     buffer_params_["max_time"] = check_max_time(buffer_params_["max_time"], buffer_params_["length"])
 
-    ws    = physics_params_.pop("ws")
-    el_dv = physics_params_.pop("el_drift_velocity")
+    el_dv = physics_params_["el_drift_velocity"]
 
     datasipm = db.DataSiPM(detector_db, run_number)
     lt_sipm  = LT_SiPM(fname=os.path.expandvars(sipm_psf), sipm_database=datasipm)
     el_gap   = lt_sipm.el_gap_width
+
+    bins, bin_info = bins_creator_sensim(datasipm, zvox_params['zmin'], zvox_params['zmax'], zvox_params['zrebin'], physics_params_['drift_velocity'], buffer_params_['sipm_width'])() 
 
     filter_delayed_hits = fl.map(filter_hits_after_max_time(buffer_params_["max_time"]),
                                  args = ('x', 'y', 'z', 'energy', 'time', 'label', 'hit_id', 'hit_part_id', 'event_number'),
@@ -246,6 +330,12 @@ def sensim( *
                                           out = 'passed_active')
     events_passed_active_hits = fl.count_filter(bool, args='passed_active')
 
+    filter_events_out_fiducial_mc = fl.map(event_fiducial_selector(**{key:(bin_info['min'][i], bin_info['max'][i]) for i, key in enumerate(['xlim', 'ylim', 'zlim'])}), 
+                                        args = ('x_a', 'y_a', 'z_a'), 
+                                        out = 'passed_fiducial_mc')
+    
+    fiducial_events_mc = fl.count_filter(bool, args='passed_fiducial_mc')
+
     assign_binclass = fl.map(binclass_creator(label_params['sig_creator']), 
                              args = ('particle_id', 'particle_name', 'creator_proc', 'hit_part_id'), 
                              out  = 'binclass')
@@ -257,8 +347,15 @@ def sensim( *
     assign_segclass = fl.map(segclass_creator(**label_params), 
                              args = ('hits_part_df', 'binclass'), 
                              out  = ('segclass_a', 'ext_a'))
+    correct_z_mc = fl.map(mc_z_drifted(physics_params['drift_velocity'], physics_params['el_drift_velocity'], physics_params['mesh_displacement']), 
+                          args = ('z_a', 'time_a'), 
+                          out = 'z_a_corr')
+    
+    voxelize_mc = fl.map(voxel_creator(bins),
+                         args = ('x_a', 'y_a', 'z_a_corr', 'energy_a', 'time_a', 'segclass_a'),
+                         out  = ('xbin_mc', 'ybin_mc', 'zbin_mc', '_', '_', '_', 'ebin_mc', '_', 'segbin_mc'))
 
-    simulate_electrons = fl.map(ielectron_simulator_diffsim(**physics_params_),
+    simulate_electrons = fl.map(ielectron_simulator_sensim(**physics_params_),
                                 args = ('x_a', 'y_a', 'z_a', 'time_a', 'energy_a', 'segclass_a'),
                                 out  = ('x_ph', 'y_ph', 'z_ph', 'energy_ph', 'times_ph', 'nphotons', 'segclass_ph'))
 
@@ -282,17 +379,39 @@ def sensim( *
     get_bin_edges  = fl.map(bin_edges_getter_sensim(buffer_params_["sipm_width"]),
                             args = ('sipm_bin_wfs'),
                             out = ('sipm_bins'))
+    
     get_sns_signal = fl.map(sns_signal_getter(datasipm, physics_params_["drift_velocity"], qcut), 
-                            args = ('sipm_bin_wfs', 'sipm_bins', 'energy_ph', 'event_number', 'binclass'),
-                            out = ('sipm_df'))
+                            args = ('sipm_bin_wfs', 'sipm_bins', 'energy_ph'),
+                            out = ('x_sns', 'y_sns', 'z_sns', 'ener_sns', 'pes_sns', 'seg_sns'))
+    
+    create_sns_df = fl.map(sns_df_creator(), 
+                           args = ('event_number', 'x_sns', 'y_sns', 'z_sns', 'ener_sns', 'pes_sns', 'binclass', 'seg_sns'), 
+                           out = 'sns_df')
+    
+    voxelize_sns = fl.map(voxel_creator(bins), 
+                          args = ('x_sns', 'y_sns', 'z_sns', 'ener_sns', 'pes_sns', 'seg_sns'), 
+                          out = ('x_bin', 'y_bin', 'z_bin', 'x_mean', 'y_mean', 'z_mean', 'e_bin', 'pes_bin', 'seg_bin'))
+    
+    create_extlabel = fl.map(extlabel_creator(label_params['segclass_dct'], bins), 
+                             args = ('x_a', 'y_a', 'z_a_corr', 'ext_a', 'x_bin', 'y_bin', 'z_bin', 'seg_bin', 'binclass'), 
+                             out = ('new_seg_bin', 'ext_bin'))
+    create_decolabel = fl.map(decolabel_creator(), 
+                              args = ('x_bin', 'y_bin', 'z_bin', 'xbin_mc', 'ybin_mc', 'zbin_mc'), 
+                              out = 'deco_bin')
+    
+    create_sns_vox_df = fl.map(sns_vox_df_creator(), 
+                               args = ('event_number', 'x_bin', 'y_bin', 'z_bin', 'x_mean', 'y_mean', 'z_mean', 'e_bin', 'pes_bin', 'binclass', 'new_seg_bin', 'deco_bin', 'ext_bin'), 
+                               out  = ('sns_vox_df'))
 
     event_count_in = fl.spy_count()
     evtnum_collect = collect()
 
     with tb.open_file(file_out, "w", filters = tbl.filters(compression)) as h5out:
         write_nohits_filter   = fl.sink(event_filter_writer(h5out, "active_hits"), args=("event_number", "passed_active") )
+        write_fid_filter_mc   = fl.sink(event_filter_writer(h5out,   "fid_ev_mc"), args=("event_number", "passed_fiducial_mc"))
         write_dark_evt_filter = fl.sink(event_filter_writer(h5out, "dark_events"), args=("event_number", "enough_photons"))
-        write_sns             = fl.sink(sns_writer         (h5out = h5out       ), args=("sipm_df")                       )
+        write_sns             = fl.sink(sns_writer         (h5out = h5out       ), args=("sns_df")                        )
+        write_sns_vox         = fl.sink(sns_vox_writer     (h5out = h5out       ), args=("sns_vox_df")                    )
 
 
         result = fl.push(source= MC_hits_and_part_from_files(files_in, rate),
@@ -305,9 +424,14 @@ def sensim( *
                                         , filter_events_no_active_hits
                                         , fl.branch(write_nohits_filter)
                                         , events_passed_active_hits.filter
+                                        , filter_events_out_fiducial_mc
+                                        , fl.branch(write_fid_filter_mc)
+                                        , fiducial_events_mc.filter
                                         , assign_binclass
                                         , creates_hits_part_df
                                         , assign_segclass
+                                        , correct_z_mc
+                                        , voxelize_mc
                                         , simulate_electrons
                                         , count_photons
                                         , fl.branch(write_dark_evt_filter)
@@ -316,13 +440,20 @@ def sensim( *
                                         , create_sipm_waveforms
                                         , get_bin_edges
                                         , get_sns_signal
+                                        , create_sns_df
                                         , fl.branch(write_sns)
+                                        , voxelize_sns
+                                        , create_extlabel
+                                        , create_decolabel
+                                        , create_sns_vox_df
+                                        , fl.branch(write_sns_vox)
                                         , "event_number"
                                         , evtnum_collect.sink),
                          result = dict(events_in     = event_count_in.future,
                                        evtnum_list   = evtnum_collect.future,
                                        dark_events   = dark_events   .future))
 
+        voxel_info_writer(h5out, bin_info)()
         copy_mc_info(files_in, h5out, result.evtnum_list,
                      detector_db, run_number)
 
