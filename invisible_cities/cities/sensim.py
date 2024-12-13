@@ -97,7 +97,7 @@ def hits_selector(active_only: bool=True):
 @check_annotations
 def ielectron_simulator_sensim(*, wi: float, fano_factor: float, lifetime: float,
                                 transverse_diffusion: float, longitudinal_diffusion: float, drift_velocity:float,
-                                el_gain: float, conde_policarpo_factor: float, mesh_displacement: float, el_drift_velocity: float):
+                                el_gain: float, conde_policarpo_factor: float, mesh_displacement: float):
     """
     Function that simulates electron creation, drift, diffusion and photon generation at the EL
 
@@ -113,18 +113,18 @@ def ielectron_simulator_sensim(*, wi: float, fano_factor: float, lifetime: float
         dx, dy, dz  = diffuse_electrons(x, y, z, nelectrons, transverse_diffusion, longitudinal_diffusion)
         nelec_ener  = distribute_hits_energy_among_electrons(nelectrons, energy)
         nelec_label = np.repeat(label, nelectrons)
-        dtimes = dz/drift_velocity + np.repeat(time, nelectrons) + mesh_displacement / el_drift_velocity # padding the mesh displacement for reduced EL simulation
+        dtimes = dz/drift_velocity + np.repeat(time, nelectrons) + mesh_displacement / drift_velocity # padding the mesh displacement for reduced EL simulation
         nphotons = np.random.normal(el_gain, np.sqrt(el_gain * conde_policarpo_factor), size=nelectrons.sum())
         nphotons = np.round(nphotons).astype(np.int32)
         return dx, dy, dz, nelec_ener, dtimes, nphotons, nelec_label
     return simulate_ielectrons
 
-def mc_z_drifted(dv, dv_el, mesh_disp):
+def mc_z_drifted(dv, mesh_disp):
     '''
     Function that adds the drift time to the z MC position
     '''
     def drift_mc_z(z, time):
-        correct_z = z + time * dv + mesh_disp * dv / dv_el
+        correct_z = z + time * dv + mesh_disp
         return correct_z
     return drift_mc_z
 
@@ -306,7 +306,7 @@ def sensim( *
 
     buffer_params_["max_time"] = check_max_time(buffer_params_["max_time"], buffer_params_["length"])
 
-    el_dv = physics_params_["el_drift_velocity"]
+    el_dv = physics_params_.pop("el_drift_velocity")
 
     datasipm = db.DataSiPM(detector_db, run_number)
     lt_sipm  = LT_SiPM(fname=os.path.expandvars(sipm_psf), sipm_database=datasipm)
@@ -347,7 +347,7 @@ def sensim( *
     assign_segclass = fl.map(segclass_creator(**label_params), 
                              args = ('hits_part_df', 'binclass'), 
                              out  = ('segclass_a', 'ext_a'))
-    correct_z_mc = fl.map(mc_z_drifted(physics_params['drift_velocity'], physics_params['el_drift_velocity'], physics_params['mesh_displacement']), 
+    correct_z_mc = fl.map(mc_z_drifted(physics_params['drift_velocity'], physics_params['mesh_displacement']), 
                           args = ('z_a', 'time_a'), 
                           out = 'z_a_corr')
     
