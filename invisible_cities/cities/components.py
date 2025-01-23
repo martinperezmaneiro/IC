@@ -15,6 +15,7 @@ from typing          import Dict
 from typing          import Tuple
 from typing          import Union
 from typing          import Any
+from typing          import Optional
 
 import tables as tb
 import numpy  as np
@@ -119,20 +120,28 @@ def city(city_function):
         if isinstance(conf.files_in, str):
             conf.files_in = [conf.files_in]
 
-        globbed_files = map(glob, map(expandvars, conf.files_in))
-        globbed_files = list(f for fs in globbed_files for f in fs)
-        if len(set(globbed_files)) != len(globbed_files):
-            warnings.warn("files_in contains repeated values. Ignoring duplicate files.", UserWarning)
-            globbed_files = [f for i, f in enumerate(globbed_files) if f not in globbed_files[:i]]
+        input_files = []
+        for pattern in map(expandvars, conf.files_in):
+            globbed_files = glob(pattern)
+            if len(globbed_files) == 0:
+                raise FileNotFoundError(f"Input pattern {pattern} did not match any files.")
+            input_files.extend(globbed_files)
 
-        conf.files_in = globbed_files
+        if len(set(input_files)) != len(input_files):
+            warnings.warn("files_in contains repeated values. Ignoring duplicate files.", UserWarning)
+            input_files = [f for i, f in enumerate(input_files) if f not in input_files[:i]]
+
+        conf.files_in = input_files
         conf.file_out = expandvars(conf.file_out)
 
         conf.event_range  = event_range(conf)
         # TODO There were deamons! self.daemons = tuple(map(summon_daemon, kwds.get('daemons', [])))
 
-        result = check_annotations(city_function)(**vars(conf))
+        args   = vars(conf)
+        result = check_annotations(city_function)(**args)
         if os.path.exists(conf.file_out):
+            write_city_configuration(conf.file_out, city_function.__name__, args)
+            copy_cities_configuration(conf.files_in[0], conf.file_out)
             index_tables(conf.file_out)
         return result
     return proxy
@@ -197,6 +206,32 @@ def index_tables(file_out):
             if 'columns_to_index' not in table.attrs:  continue  # Check for columns to index
             for colname in table.attrs.columns_to_index:         # Index those columns
                 table.colinstances[colname].create_index()
+
+
+def write_city_configuration( filename : str
+                            , city_name: str
+                            , args     : dict):
+    args = {k: str(v) for k,v in args.items()}
+
+    with tb.open_file(filename, "a") as file:
+        df = (pd.Series(args)
+                .to_frame()
+                .reset_index()
+                .rename(columns={"index": "variable", 0: "value"}))
+        df_writer(file, df, "config", city_name, f"configuration for {city_name}", str_col_length=300)
+
+
+def copy_cities_configuration( file_in : str, file_out : str):
+    with tb.open_file(file_in, "r") as fin:
+        if "config" not in fin.root:
+            warnings.warn("Input file does not contain /config group", UserWarning)
+            return
+
+        with tb.open_file(file_out, "a") as fout:
+            if "config" not in fout.root:
+                fout.create_group(fout.root, "config")
+            for table in fin.root.config:
+                fin.copy_node(table, fout.root.config, recursive=True)
 
 
 def _check_invalid_event_range_spec(er):
@@ -561,12 +596,17 @@ def hits_and_kdst_from_files( paths : List[str]
             except (tb.exceptions.NoSuchNodeError, IndexError):
                 continue
 
-            check_lengths(event_info, hits_df.event.unique())
+            check_lengths(event_info, kdst_df.event.unique())
 
             for evtinfo in event_info:
                 event_number, timestamp = evtinfo.fetch_all_fields()
                 hits = hits_from_df(hits_df.loc[hits_df.event == event_number])
-                yield dict(hits = hits[event_number],
+                if len(hits):
+                    hits = hits[event_number]
+                else:
+                    warnings.warn(f"Event {event_number} does not contain hits", UserWarning)
+                    hits = HitCollection(event_number, timestamp, [])
+                yield dict(hits = hits,
                            kdst = kdst_df.loc[kdst_df.event==event_number],
                            run_number = run_number,
                            event_number = event_number,
@@ -1507,7 +1547,11 @@ def hits_thresholder(threshold_charge : float, same_peak : bool ) -> Callable:
 
 
 @check_annotations
-def hits_corrector(map_fname : str, apply_temp : bool) -> Callable:
+def hits_corrector( filename   : str
+                  , apply_temp : bool
+                  , norm_strat : NormStrategy
+                  , norm_value : Optional[Union[float, NoneType]] = None
+                  ) -> Callable:
     """
     Applies energy correction map and converts drift time to z.
 
@@ -1524,11 +1568,20 @@ def hits_corrector(map_fname : str, apply_temp : bool) -> Callable:
     A function that takes a HitCollection as input and returns
     the same object with modified Ec and Z fields.
     """
-    map_fname = os.path.expandvars(map_fname)
-    maps      = read_maps(map_fname)
-    get_coef  = apply_all_correction(maps, apply_temp = apply_temp, norm_strat = NormStrategy.kr)
-    time_to_Z = (get_df_to_z_converter(maps) if maps.t_evol is not None else
-                 lambda x: x)
+
+    if ( ((norm_strat is not NormStrategy.custom)  ^  (norm_value is None)) or
+          (norm_strat is     NormStrategy.custom) and (norm_value<= 0)):
+        raise ValueError(
+            "`NormStrategy.custom` requires `norm_value` to be greater than 0. "
+            "For all other `NormStrategy` options, `norm_value` must not be provided."
+        )
+
+    maps      = read_maps(os.path.expandvars(filename))
+    get_coef  = apply_all_correction( maps
+                                    , apply_temp = apply_temp
+                                    , norm_strat = norm_strat
+                                    , norm_value = norm_value)
+    time_to_Z = get_df_to_z_converter(maps) if maps.t_evol is not None else identity
 
     def correct(hitc : HitCollection) -> HitCollection:
         for hit in hitc.hits:
