@@ -72,6 +72,7 @@ class MCTableType(AutoNameEnumBase):
     sns_response     = auto()
     waveforms        = auto()
     string_map       = auto()
+    cluster_counts   = auto()
 
 
 class NormStrategy(AutoNameEnumBase):

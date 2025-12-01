@@ -136,7 +136,7 @@ def bins_creator_sensim(datasipm, zmin, zmax, z_rebin, dv, sipm_width):
 
     xbin = round(xsipm.drop_duplicates().sort_values().diff().dropna().max(), 3)
     ybin = round(ysipm.drop_duplicates().sort_values().diff().dropna().max(), 3)
-    zbin = dv * sipm_width * z_rebin
+    zbin = sipm_width * z_rebin # * dv ### If we want always the same voxelization in Z, do not use dv as it changes with gas mixture
 
     bin_info = dict(min = (xmin - xbin / 2, ymin - ybin / 2, zmin), 
                     max = (xmax + xbin / 2, ymax + ybin / 2, zmax), 
