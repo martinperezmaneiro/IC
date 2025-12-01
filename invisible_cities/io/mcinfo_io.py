@@ -203,6 +203,9 @@ def read_mc_tables(file_in : str                        ,
         elif tbl is MCTableType.string_map           :
             str_map = load_mcstringmap(file_in)
             tbl_dict[tbl] = str_map
+        elif tbl is MCTableType.cluster_counts       :
+            cls_cts = load_clustercount(file_in)
+            tbl_dict[tbl] = cls_cts
         else                                         :
             raise TypeError("MC table has no reader")
     return tbl_dict
@@ -345,6 +348,21 @@ def load_eventnumbermap(file_name: str) -> pd.DataFrame:
     nexus and IC event_ids.
     """
     return load_dst(file_name, 'Run', 'eventMap')
+
+def load_clustercount(file_name: str) -> pd.DataFrame:
+    """
+    Load the nexus to IC cluster counts to a pd.DataFrame
+
+    parameters
+    ----------
+    file_name : str
+                Name of the file containing info.
+
+    returns
+    -------
+    pd.DataFrame with the cluster count info of each event.
+    """
+    return load_dst(file_name, 'MC', 'cluster_counts')
 
 
 def load_mcconfiguration(file_name : str) -> pd.DataFrame:
