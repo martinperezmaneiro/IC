@@ -13,7 +13,9 @@ def select_main_track(part, binclass, sig_creator):
     if binclass:
         main_track = part[(part.particle_name.isin(['e+', 'e-'])) & (part.creator_proc == sig_creator)]
     else:
-        main_track_candidates = part[(part.particle_name == 'e-') & (part.creator_proc.isin(['compt', 'phot', 'none']))]
+        main_track_candidates = part[(part.particle_name == 'e-') & (part.creator_proc.isin(['compt', 'phot', 'none', 'eIoni']))]
+        # added eIoni as there are some cases where there is a pair creation in a 208Tl background event without any photon scape
+        # so total energy is in the Qbb but the event shape is an e+e- track of ~1.6 MeV with several e- tracks around
         main_idx = main_track_candidates.track_ener.idxmax()
         main_track = main_track_candidates.loc[[main_idx]]
     return main_track
